@@ -1,6 +1,6 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const { google } = require("googleapis");
+const { GoogleSpreadsheet } = require("google-spreadsheet");
 
 const app = express();
 app.use(bodyParser.json());
@@ -9,52 +9,63 @@ app.use(bodyParser.json());
 const SHEET_ID = "1VemwPdy3OmSKld_XelA2ETH4V9MEMU5Wc6PnywvHqwE";
 const SHEET_NAME = "Sheet1";
 
-// ==================
+// Render will auto provide PORT
+const PORT = process.env.PORT || 3000;
 
-async function getSheetData() {
-  const auth = new google.auth.GoogleAuth({
-    scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
-  });
-
-  const client = await auth.getClient();
-  const sheets = google.sheets({ version: "v4", auth: client });
-
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: SHEET_NAME,
-  });
-
-  return res.data.values;
-}
-
+// ===== VERIFY ENDPOINT =====
 app.post("/verify", async (req, res) => {
   try {
-    const emp = String(req.body.emp_code || "").trim();
-    const dob = String(req.body.dob || "").trim();
+    const empCode = String(req.body.emp_code || "").trim();
+    const dobInput = String(req.body.dob || "").trim();
 
-    if (!emp || !dob) {
+    if (!empCode || !dobInput) {
       return res.status(400).json({ status: "failed", reason: "missing_input" });
     }
 
-    const rows = await getSheetData();
+    // Load sheet
+    const doc = new GoogleSpreadsheet(SHEET_ID);
 
-    for (let i = 1; i < rows.length; i++) {
-      const sheetEmp = String(rows[i][0]).trim();
-      const sheetDob = String(rows[i][1]).trim();
+    await doc.useServiceAccountAuth({
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    });
 
-      if (sheetEmp === emp && sheetDob === dob) {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle[SHEET_NAME];
+
+    if (!sheet) {
+      return res.status(500).json({ status: "error", reason: "sheet_not_found" });
+    }
+
+    const rows = await sheet.getRows();
+
+    for (let row of rows) {
+      const sheetEmp = String(row.Emp_Code).trim();
+      const sheetDob = String(row.DOB).trim();
+
+      if (sheetEmp === empCode && sheetDob === dobInput) {
         return res.status(200).json({
           status: "success",
           emp_code: sheetEmp,
+          name: row.Name || "",
         });
       }
     }
 
+    // No match
     return res.status(401).json({ status: "failed" });
+
   } catch (err) {
-    return res.status(500).json({ status: "error", message: err.message });
+    console.error("ERROR:", err);
+    return res.status(500).json({ status: "error" });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+// ===== HEALTH CHECK =====
+app.get("/", (req, res) => {
+  res.send("SBIOA(K) Verification Service Running");
+});
+
+app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
+});
